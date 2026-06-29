@@ -2,6 +2,8 @@
 
 For the latest updates, raw source code, and interactive usage instructions, please visit our GitHub repository: https://github.com/sherman6931/Single-View-Metrology-for-Maize-Height-Estimation
 
+Datasets and results please refer to:  https://doi.org/10.5281/zenodo.21037822
+
 This repository provides a reproducible demonstration package for maize plant-height estimation using single-view metrology (SVM). The released package includes an evaluation dataset, a trained maize top/base keypoint model, the geometric height-estimation code, a GUI demo, result tables, and a browser-based simulator for geometric checking.
 
 This repository is released as the open-source project associated with the manuscript **End-to-End Intelligent Maize Plant Height Estimation: A Geometry-Constrained Single View Metrology Framework**. It is intended to provide the supporting code, released data, model weights, result files, and simulator needed for independent checking of the main computational workflow described in the paper.
