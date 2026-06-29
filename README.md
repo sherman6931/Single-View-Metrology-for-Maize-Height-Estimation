@@ -1,5 +1,7 @@
 # Maize Height Estimation Using Single View Metrology
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21037822.svg)](https://doi.org/10.5281/zenodo.21037822)
+
 For the latest updates, raw source code, and interactive usage instructions, please visit our GitHub repository: https://github.com/sherman6931/Single-View-Metrology-for-Maize-Height-Estimation
 
 Datasets and results please refer to:  https://doi.org/10.5281/zenodo.21037822
