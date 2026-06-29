@@ -1,0 +1,1902 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Maize SVM Simulator with Method Comparison</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #ffffff; font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
+
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #333;
+            background: rgba(255, 255, 255, 0.85);
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 8px;
+            pointer-events: none;
+            user-select: none;
+            font-size: 14px;
+            line-height: 1.6;
+            backdrop-filter: blur(4px);
+            z-index: 10;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+
+        .key {
+            display: inline-block;
+            background: #f0f0f0;
+            border-radius: 4px;
+            padding: 0 6px;
+            font-family: monospace;
+            margin: 0 2px;
+            border-bottom: 2px solid #ccc;
+            border-right: 1px solid #ccc;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .lil-gui {
+            --background-color: #f9f9f9;
+            --text-color: #333333;
+            --title-background-color: #eeeeee;
+            --widget-color: #e0e0e0;
+            --hover-color: #d4d4d4;
+            --focus-color: #0066cc;
+            --number-color: #0066cc;
+            border: 1px solid #ddd;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+
+        #svmOverlay {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100vw;
+            height: 100vh;
+            pointer-events: none;
+            z-index: 5;
+        }
+
+        #svmOutput {
+            position: absolute;
+            left: 10px;
+            right: auto;
+            bottom: 10px;
+            max-width: 560px;
+            color: #222;
+            background: rgba(255, 255, 255, 0.90);
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 12px 14px;
+            font-size: 13px;
+            line-height: 1.45;
+            z-index: 10;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            backdrop-filter: blur(4px);
+        }
+
+        #svmOutput code {
+            font-family: Consolas, "Courier New", monospace;
+            background: #f3f3f3;
+            padding: 1px 4px;
+            border-radius: 3px;
+        }
+
+        #svmOutput .metric-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            margin: 8px 0;
+        }
+
+        #svmOutput .metric-card {
+            border: 1px solid #e2e2e2;
+            border-radius: 6px;
+            padding: 6px 8px;
+            background: rgba(250, 250, 250, 0.92);
+        }
+
+        #svmOutput .metric-card b {
+            display: block;
+            margin-bottom: 2px;
+        }
+
+        #svmOutput .muted {
+            color: #666;
+        }
+
+        #svmOutput .metric-line {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            white-space: nowrap;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="info">
+        <b>System Instructions</b><hr style="border: 0; border-top: 1px solid #ddd; margin: 8px 0;">
+        <b>Keyboard:</b><br>
+        <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> Adjust Camera Horizon Position<br>
+        <span class="key">Space</span> / <span class="key">Shift</span> Adjust Camera Vertical Position<br>
+        <b>Mouse:</b><br>
+        <b>Mouse Middle Drag</b>: Camera Orientation<br>
+        <b>Mouse Wheel</b>: Adjust FOV<br>
+        <b>Mouse L-Click</b>: Place Pole Marker<br>
+        <b>Mouse R-Click</b>: Remove Marker
+    </div>
+    <canvas id="svmOverlay"></canvas>
+    <div id="svmOutput">Place at least one pole marker to compute SVM inputs.</div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+        let scene, camera, renderer;
+        let gridHelper;
+        let raycaster, pointer;
+        let groundPlane;
+        let clock;
+
+        let ghostPole;
+        let poles = [];
+
+        let isMiddleDragging = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        const keysPressed = {};
+        const guiControllers = {};
+        let gui;
+        let overlayCanvas, overlayCtx, svmOutputDiv;
+        let outputPanelMode = 'live';
+        let lastFullFactorialSummary = null;
+
+        const params = {
+            camHeight: 5.0,
+            camPitch: 25,
+            camYaw: 0,
+            camX: 0,
+            camZ: 10,
+            fov: 45,
+
+            gridSize: 100,
+            gridSpacing: 1.0,
+
+            poleHeight: 2.0,
+            poleRadius: 0.05,
+            segmentSize: 0.2,
+            poleOpacity: 1.0,
+
+            showSVMOverlay: true,
+            showHorizonLine: true,
+            showVerticalVP: true,
+            showKeypoints: true,
+            showErrorEvaluation: true,
+            usePixelQuantization: true,
+
+            compareTraditionalSVM: true,
+            baselineFocalErrorPercent: 3.0,
+            baselinePitchBiasDeg: 1.0,
+            baselineHeightErrorPercent: 0.0,
+
+            batchSize: 30,
+            randomHeightMin: 0.8,
+            randomHeightMax: 3.0,
+
+            // Full-factorial batch simulation defaults.
+            // These defaults are aligned with the manuscript simulation envelope
+            // and the empirical maize-height range, while remaining manageable
+            // for browser-side CSV/JSON export.
+            fullCamHeightMin: 1.0,
+            fullCamHeightMax: 5.0,
+            fullCamHeightStep: 1.0,
+
+            fullPitchMin: 0,
+            fullPitchMax: 45,
+            fullPitchStep: 5,
+
+            fullYawMin: 0,
+            fullYawMax: 30,
+            fullYawStep: 5,
+
+            fullFovMin: 15,
+            fullFovMax: 60,
+            fullFovStep: 5,
+
+            fullPoleHeightMin: 0.6,
+            fullPoleHeightMax: 2.7,
+            fullPoleHeightStep: 0.1,
+
+            // Nuisance placement settings. These are not swept by default;
+            // the pole is placed along the optical-axis direction and the simulator
+            // searches a distance that keeps top and bottom visible when possible.
+            fullPoleDistanceMin: 2.0,
+            fullPoleDistanceMax: 80.0,
+            fullPoleDistanceStep: 0.5,
+            fullVisibilityMarginPx: 6,
+            fullFactorialMaxRows: 300000,
+            fullFactorialStatus: 'Not run yet.',
+
+            saveImage: function() { saveScreenshotWithData(); },
+            exportJSON: function() { exportSVMJSON(); },
+            exportCSV: function() { exportSVMCSV(); },
+            generateBatch: function() { generateValidationBatch(); },
+            clearPoles: function() { clearPoles(); },
+            generateFullFactorialMetrics: function() { generateFullFactorialMetrics(); },
+            previewFullFactorialCount: function() { previewFullFactorialCount(); },
+            exportFullFactorialCSV: function() { exportFullFactorialCSV(); },
+            exportFullFactorialJSON: function() { exportFullFactorialJSON(); }
+        };
+
+        init();
+        animate();
+
+        function init() {
+            clock = new THREE.Clock();
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xffffff);
+            scene.fog = new THREE.Fog(0xffffff, 20, 80);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+            setupSVMOverlay();
+
+            camera = new THREE.PerspectiveCamera(params.fov, window.innerWidth / window.innerHeight, 0.1, 1000);
+            updateCameraPose();
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
+            scene.add(ambientLight);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(10, 20, 10);
+            scene.add(dirLight);
+
+            createGrid();
+            groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+            raycaster = new THREE.Raycaster();
+            pointer = new THREE.Vector2();
+
+            createGhostPole();
+
+            setupGUI();
+
+            window.addEventListener('resize', onWindowResize);
+
+            document.addEventListener('pointermove', onPointerMove);
+            document.addEventListener('pointerdown', onPointerDown);
+            document.addEventListener('pointerup', onPointerUp);
+            document.addEventListener('wheel', onMouseWheel, { passive: false });
+            document.addEventListener('contextmenu', event => event.preventDefault());
+
+            window.addEventListener('keydown', onKeyDown);
+            window.addEventListener('keyup', onKeyUp);
+        }
+
+        function saveScreenshotWithData() {
+            const infoDiv = document.getElementById('info');
+            const guiDom = gui.domElement;
+
+            const oldInfoDisplay = infoDiv.style.display;
+            const oldGuiDisplay = guiDom.style.display;
+            const oldPanelDisplay = svmOutputDiv.style.display;
+            const oldGhostVisible = ghostPole.visible;
+
+            infoDiv.style.display = 'none';
+            guiDom.style.display = 'none';
+            svmOutputDiv.style.display = 'none';
+            ghostPole.visible = false;
+
+            renderer.render(scene, camera);
+
+            const width = renderer.domElement.width;
+            const height = renderer.domElement.height;
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+
+            ctx.drawImage(renderer.domElement, 0, 0);
+            if (params.showSVMOverlay) {
+                drawMeasurementOverlay(ctx, width, height, true);
+            }
+
+            const fontSize = Math.max(14, Math.floor(width / 75));
+            const lineHeight = fontSize * 1.5;
+            const padding = Math.floor(fontSize * 0.8);
+
+            ctx.font = `bold ${fontSize}px sans-serif`;
+            ctx.textBaseline = 'bottom';
+            ctx.fillStyle = 'rgba(0, 0, 0, 1.0)';
+            ctx.shadowColor = 'rgba(255, 255, 255, 0.85)';
+            ctx.shadowBlur = 4;
+            ctx.shadowOffsetX = 1;
+            ctx.shadowOffsetY = 1;
+
+            const samples = collectSVMSamples();
+            const first = samples[0];
+            const proposedStats = computeMethodStats(samples, 'proposed');
+            const baselineStats = computeMethodStats(samples, 'baseline');
+            const textLine1 = `[Camera] H_cam: ${params.camHeight.toFixed(3)} m | Pitch: ${params.camPitch.toFixed(1)}° | Yaw: ${params.camYaw.toFixed(1)}° | FOV: ${params.fov.toFixed(1)}°`;
+            const textLine2 = first
+                ? `[SVM] Proposed SVM method MRE=${formatNumber(proposedStats.mre_percent, 4)}% | Calibration-dependent SVM MRE=${formatNumber(baselineStats.mre_percent, 4)}% | Focal bias=${params.baselineFocalErrorPercent.toFixed(1)}%, Pitch bias=${params.baselinePitchBiasDeg.toFixed(1)}°`
+                : `[SVM] No pole marker available.`;
+
+            ctx.fillText(textLine1, padding, height - padding - lineHeight);
+            ctx.fillText(textLine2, padding, height - padding);
+
+            try {
+                const dataURL = canvas.toDataURL('image/png');
+                const link = document.createElement('a');
+                const timestamp = makeTimestamp();
+                link.download = `svm_view_${timestamp}.png`;
+                link.href = dataURL;
+                link.click();
+            } catch (err) {
+                console.error('Screenshot failed:', err);
+            }
+
+            infoDiv.style.display = oldInfoDisplay;
+            guiDom.style.display = oldGuiDisplay;
+            svmOutputDiv.style.display = oldPanelDisplay;
+            ghostPole.visible = oldGhostVisible;
+        }
+
+        function setupSVMOverlay() {
+            overlayCanvas = document.getElementById('svmOverlay');
+            overlayCtx = overlayCanvas.getContext('2d');
+            svmOutputDiv = document.getElementById('svmOutput');
+            resizeOverlayCanvas();
+        }
+
+        function resizeOverlayCanvas() {
+            if (!overlayCanvas || !renderer) return;
+            overlayCanvas.width = renderer.domElement.width;
+            overlayCanvas.height = renderer.domElement.height;
+        }
+
+        function makeTimestamp() {
+            return new Date().toISOString().replace(/[:.]/g, '-');
+        }
+
+        function formatNumber(value, digits = 3) {
+            return Number.isFinite(value) ? Number(value).toFixed(digits) : 'NaN';
+        }
+
+        function useFeatureCoordinate(value) {
+            // In the real image pipeline, feature coordinates come from pixels.
+            // Quantizing here gives a stricter simulation of image-coordinate measurement
+            // while still preventing the true pole height from entering Eq. (29).
+            return params.usePixelQuantization && Number.isFinite(value) ? Math.round(value) : value;
+        }
+
+        function computeMethodStats(samples, method = 'proposed') {
+            const valid = samples.filter(s => {
+                const rec = method === 'baseline' ? s.traditional_svm_baseline : s;
+                return rec && rec.valid && Number.isFinite(s.ground_truth_height_m) && s.ground_truth_height_m > 0 && Number.isFinite(rec.absolute_error_m) && Number.isFinite(rec.relative_error_percent);
+            });
+            const n = valid.length;
+            if (n === 0) {
+                return {
+                    method,
+                    valid_count: 0,
+                    total_count: samples.length,
+                    mre_percent: NaN,
+                    rmse_m: NaN,
+                    rmse_cm: NaN,
+                    max_relative_error_percent: NaN,
+                    within_1_percent_count: 0,
+                    within_1_percent_ratio: NaN
+                };
+            }
+            const getRec = s => method === 'baseline' ? s.traditional_svm_baseline : s;
+            const sumRel = valid.reduce((acc, s) => acc + getRec(s).relative_error_percent, 0);
+            const sumSq = valid.reduce((acc, s) => acc + getRec(s).absolute_error_m * getRec(s).absolute_error_m, 0);
+            const maxRel = valid.reduce((acc, s) => Math.max(acc, getRec(s).relative_error_percent), -Infinity);
+            const within1 = valid.filter(s => getRec(s).within_1_percent).length;
+            const rmse = Math.sqrt(sumSq / n);
+            return {
+                method,
+                valid_count: n,
+                total_count: samples.length,
+                mre_percent: sumRel / n,
+                rmse_m: rmse,
+                rmse_cm: rmse * 100,
+                max_relative_error_percent: maxRel,
+                within_1_percent_count: within1,
+                within_1_percent_ratio: within1 / n
+            };
+        }
+
+        function computeEvaluationStats(samples) {
+            return computeMethodStats(samples, 'proposed');
+        }
+
+        function getImageSize() {
+            return {
+                width: renderer.domElement.width,
+                height: renderer.domElement.height
+            };
+        }
+
+        function projectWorldToPixel(worldPoint) {
+            camera.updateMatrixWorld(true);
+            const size = getImageSize();
+            const ndc = worldPoint.clone().project(camera);
+            return {
+                x: (ndc.x + 1) * size.width / 2,
+                y: (1 - ndc.y) * size.height / 2,
+                ndcZ: ndc.z,
+                insideFrame: ndc.x >= -1 && ndc.x <= 1 && ndc.y >= -1 && ndc.y <= 1 && ndc.z >= -1 && ndc.z <= 1
+            };
+        }
+
+        function projectDirectionToPixel(worldDirection) {
+            const direction = worldDirection.clone();
+            if (direction.lengthSq() < 1e-12) return null;
+            direction.normalize();
+            const farDistance = 1000000;
+            const farPoint = camera.position.clone().add(direction.multiplyScalar(farDistance));
+            return projectWorldToPixel(farPoint);
+        }
+
+        function getForwardHorizontalDirection() {
+            const forward = new THREE.Vector3();
+            camera.getWorldDirection(forward);
+            forward.y = 0;
+            if (forward.lengthSq() < 1e-10) {
+                const yawRad = THREE.MathUtils.degToRad(params.camYaw);
+                forward.set(-Math.sin(yawRad), 0, -Math.cos(yawRad));
+            }
+            return forward.normalize();
+        }
+
+        function computeGeometricPriors() {
+            // Horizon line: use the vanishing point of the current horizontal forward direction.
+            // With zero roll in this simulator, the ground-plane vanishing line is horizontal,
+            // so its vertical coordinate y_hor is enough for Eq. (29).
+            const horizonPoint = projectDirectionToPixel(getForwardHorizontalDirection());
+
+            // Vertical vanishing point: projection of the world-up direction at infinity.
+            const verticalVP = projectDirectionToPixel(new THREE.Vector3(0, 1, 0));
+
+            return {
+                y_hor_px: horizonPoint ? horizonPoint.y : NaN,
+                x_hor_ref_px: horizonPoint ? horizonPoint.x : NaN,
+                x_v_px: verticalVP ? verticalVP.x : NaN,
+                y_v_px: verticalVP ? verticalVP.y : NaN
+            };
+        }
+
+        function getVerticalFocalLengthPx() {
+            const size = getImageSize();
+            return (size.height / 2) / Math.tan(THREE.MathUtils.degToRad(params.fov) / 2);
+        }
+
+        function fovFromVerticalFocalLengthPx(focalPx) {
+            const size = getImageSize();
+            if (!Number.isFinite(focalPx) || focalPx <= 0) return params.fov;
+            return THREE.MathUtils.radToDeg(2 * Math.atan((size.height / 2) / focalPx));
+        }
+
+        function buildBaselineCamera() {
+            const size = getImageSize();
+            const focalTruePx = getVerticalFocalLengthPx();
+            const focalEstimatedPx = focalTruePx * (1 + params.baselineFocalErrorPercent / 100);
+            const estimatedFov = fovFromVerticalFocalLengthPx(focalEstimatedPx);
+            const estimatedHeight = params.camHeight * (1 + params.baselineHeightErrorPercent / 100);
+            const estimatedPitch = params.camPitch + params.baselinePitchBiasDeg;
+
+            const baselineCamera = new THREE.PerspectiveCamera(estimatedFov, size.width / size.height, 0.1, 1000);
+            baselineCamera.position.set(params.camX, estimatedHeight, params.camZ);
+            baselineCamera.rotation.order = 'YXZ';
+            baselineCamera.rotation.y = THREE.MathUtils.degToRad(params.camYaw);
+            baselineCamera.rotation.x = THREE.MathUtils.degToRad(-estimatedPitch);
+            baselineCamera.updateProjectionMatrix();
+            baselineCamera.updateMatrixWorld(true);
+
+            return {
+                camera: baselineCamera,
+                focal_true_px: focalTruePx,
+                focal_estimated_px: focalEstimatedPx,
+                fov_estimated_deg: estimatedFov,
+                pitch_estimated_deg: estimatedPitch,
+                H_cam_estimated_m: estimatedHeight
+            };
+        }
+
+        function pixelToWorldRay(px, py, sourceCamera) {
+            const size = getImageSize();
+            const ndc = new THREE.Vector3((px / size.width) * 2 - 1, -(py / size.height) * 2 + 1, 0.5);
+            const worldPoint = ndc.unproject(sourceCamera);
+            const origin = sourceCamera.position.clone();
+            const direction = worldPoint.sub(origin).normalize();
+            return { origin, direction };
+        }
+
+        function computeTraditionalSVMBaseline(xTop, yTop, xBot, yBot, groundTruthHeight) {
+            const baseline = buildBaselineCamera();
+            const camObj = baseline.camera;
+            const bottomRay = pixelToWorldRay(xBot, yBot, camObj);
+            const topRay = pixelToWorldRay(xTop, yTop, camObj);
+
+            let estimatedHeight = NaN;
+            let valid = true;
+            let warning = '';
+
+            if (!Number.isFinite(xTop) || !Number.isFinite(yTop) || !Number.isFinite(xBot) || !Number.isFinite(yBot)) {
+                valid = false;
+                warning = 'Non-finite keypoint input.';
+            } else if (Math.abs(bottomRay.direction.y) < 1e-9) {
+                valid = false;
+                warning = 'Calibration-dependent SVM bottom ray is nearly parallel to the ground plane.';
+            } else {
+                const tBottom = (0 - bottomRay.origin.y) / bottomRay.direction.y;
+                if (!Number.isFinite(tBottom) || tBottom <= 0) {
+                    valid = false;
+                    warning = 'Calibration-dependent SVM bottom ray does not intersect the ground in front of the camera.';
+                } else {
+                    const bottomEstimated = bottomRay.origin.clone().add(bottomRay.direction.clone().multiplyScalar(tBottom));
+                    const dx = bottomEstimated.x - topRay.origin.x;
+                    const dz = bottomEstimated.z - topRay.origin.z;
+                    const denom = topRay.direction.x * topRay.direction.x + topRay.direction.z * topRay.direction.z;
+                    if (denom < 1e-12) {
+                        valid = false;
+                        warning = 'Calibration-dependent SVM top ray has insufficient horizontal component.';
+                    } else {
+                        const tTop = (dx * topRay.direction.x + dz * topRay.direction.z) / denom;
+                        const topEstimated = topRay.origin.clone().add(topRay.direction.clone().multiplyScalar(tTop));
+                        estimatedHeight = topEstimated.y;
+                        if (!Number.isFinite(estimatedHeight) || estimatedHeight < 0) {
+                            valid = false;
+                            warning = 'Invalid calibration-dependent SVM height; check focal length or pitch settings.';
+                        }
+                    }
+                }
+            }
+
+            const absoluteError = valid ? Math.abs(estimatedHeight - groundTruthHeight) : NaN;
+            const relativeErrorPercent = valid && groundTruthHeight > 0 ? (absoluteError / groundTruthHeight) * 100 : NaN;
+            const within1Percent = Number.isFinite(relativeErrorPercent) && relativeErrorPercent <= 1.0;
+
+            return {
+                description: 'Calibration-dependent SVM. It reconstructs the bottom ground point and the top height from pixel rays using explicit focal length/FOV and pitch angle. The configured focal and pitch biases simulate calibration or pose-estimation errors.',
+                estimated_height_m: estimatedHeight,
+                absolute_error_m: absoluteError,
+                absolute_error_cm: absoluteError * 100,
+                relative_error_percent: relativeErrorPercent,
+                within_1_percent: within1Percent,
+                valid,
+                warning,
+                assumed_parameters: {
+                    focal_true_px: baseline.focal_true_px,
+                    focal_estimated_px: baseline.focal_estimated_px,
+                    focal_error_percent: params.baselineFocalErrorPercent,
+                    fov_estimated_deg: baseline.fov_estimated_deg,
+                    pitch_estimated_deg: baseline.pitch_estimated_deg,
+                    pitch_bias_deg: params.baselinePitchBiasDeg,
+                    H_cam_estimated_m: baseline.H_cam_estimated_m,
+                    height_error_percent: params.baselineHeightErrorPercent
+                }
+            };
+        }
+
+        function computeSVMMeasurementForPole(mesh, index) {
+            const size = getImageSize();
+            const visualHeight = mesh.userData.visualHeight ?? params.poleHeight;
+            const bottomWorld = new THREE.Vector3(mesh.position.x, 0, mesh.position.z);
+            const topWorld = new THREE.Vector3(mesh.position.x, visualHeight, mesh.position.z);
+
+            const topRaw = projectWorldToPixel(topWorld);
+            const bottomRaw = projectWorldToPixel(bottomWorld);
+            const priorsRaw = computeGeometricPriors();
+
+            const Hcam = params.camHeight;
+            const xTop = useFeatureCoordinate(topRaw.x);
+            const xBot = useFeatureCoordinate(bottomRaw.x);
+            const yTop = useFeatureCoordinate(topRaw.y);
+            const yBot = useFeatureCoordinate(bottomRaw.y);
+            const yHor = useFeatureCoordinate(priorsRaw.y_hor_px);
+            const yV = useFeatureCoordinate(priorsRaw.y_v_px);
+
+            const denom1 = yBot - yHor;
+            const denom2 = yTop - yV;
+            let estimatedHeight = NaN;
+            let valid = true;
+            let warning = '';
+
+            if (!Number.isFinite(Hcam) || !Number.isFinite(yTop) || !Number.isFinite(yBot) || !Number.isFinite(yHor) || !Number.isFinite(yV)) {
+                valid = false;
+                warning = 'Non-finite SVM input.';
+            } else if (Math.abs(denom1) < 1e-9 || Math.abs(denom2) < 1e-9) {
+                valid = false;
+                warning = 'Degenerate geometry: denominator is close to zero.';
+            } else {
+                // Eq. (29): H_obj = H_cam * [1 - ((y_top-y_hor)/(y_bot-y_hor))*((y_bot-y_v)/(y_top-y_v))]
+                // Only the five SVM inputs below enter this equation.
+                estimatedHeight = Hcam * (1 - ((yTop - yHor) / denom1) * ((yBot - yV) / denom2));
+                if (!Number.isFinite(estimatedHeight) || estimatedHeight < 0) {
+                    valid = false;
+                    warning = 'Invalid estimated height; check camera pose and feature visibility.';
+                }
+            }
+
+            const groundTruthHeight = visualHeight;
+            const absoluteError = valid ? Math.abs(estimatedHeight - groundTruthHeight) : NaN;
+            const relativeErrorPercent = valid && groundTruthHeight > 0 ? (absoluteError / groundTruthHeight) * 100 : NaN;
+            const within1Percent = Number.isFinite(relativeErrorPercent) && relativeErrorPercent <= 1.0;
+            const traditionalBaseline = computeTraditionalSVMBaseline(xTop, yTop, xBot, yBot, groundTruthHeight);
+
+            return {
+                sample_id: index + 1,
+                image_width_px: size.width,
+                image_height_px: size.height,
+                inputs: {
+                    H_cam_m: Hcam,
+                    y_top_px: yTop,
+                    y_bot_px: yBot,
+                    y_hor_px: yHor,
+                    y_v_px: yV
+                },
+                raw_projected_coordinates_px: {
+                    x_top_px: topRaw.x,
+                    y_top_px: topRaw.y,
+                    x_bot_px: bottomRaw.x,
+                    y_bot_px: bottomRaw.y,
+                    y_hor_px: priorsRaw.y_hor_px,
+                    y_v_px: priorsRaw.y_v_px
+                },
+                keypoints_for_visualization: {
+                    x_top_px: topRaw.x,
+                    x_bot_px: bottomRaw.x,
+                    x_v_px: priorsRaw.x_v_px,
+                    x_hor_ref_px: priorsRaw.x_hor_ref_px
+                },
+                estimated_height_m: estimatedHeight,
+                ground_truth_height_m: groundTruthHeight,
+                absolute_error_m: absoluteError,
+                absolute_error_cm: absoluteError * 100,
+                relative_error_percent: relativeErrorPercent,
+                within_1_percent: within1Percent,
+                traditional_svm_baseline: traditionalBaseline,
+                valid,
+                warning,
+                note: 'ground_truth_height_m is used only for simulation evaluation, not for Eq. (29) height calculation.'
+            };
+        }
+
+        function collectSVMSamples() {
+            return poles.map((mesh, index) => computeSVMMeasurementForPole(mesh, index));
+        }
+
+        function buildExportPayload() {
+            const samples = collectSVMSamples();
+            return {
+                created_at: new Date().toISOString(),
+                description: 'SVM simulator output with error evaluation and a calibration-dependent SVM method. The virtual pole height is stored only as ground truth for simulation evaluation; it is not used in Eq. (29) height calculation.',
+                coordinate_system: 'Pixel coordinates are measured from the top-left corner of the exported image; y increases downward.',
+                proposed_equation_29: 'H_obj = H_cam * (1 - ((y_top-y_hor)/(y_bot-y_hor))*((y_bot-y_v)/(y_top-y_v)))',
+                proposed_calculation_inputs: ['H_cam_m', 'y_top_px', 'y_bot_px', 'y_hor_px', 'y_v_px'],
+                calibration_dependent_svm_description: 'The calibration-dependent SVM method reconstructs height from top/bottom pixel rays using explicit focal length/FOV and pitch angle. Focal and pitch biases simulate calibration or pose-estimation errors.',
+                calibration_dependent_svm_inputs: ['x_top_px', 'y_top_px', 'x_bot_px', 'y_bot_px', 'H_cam_m', 'estimated_focal_length_px', 'estimated_pitch_deg'],
+                evaluation_outputs: ['ground_truth_height_m', 'absolute_error_m', 'relative_error_percent', 'MRE_percent', 'RMSE_m'],
+                use_pixel_quantization_for_calculation: params.usePixelQuantization,
+                calibration_dependent_svm_bias_settings: {
+                    focal_error_percent: params.baselineFocalErrorPercent,
+                    pitch_bias_deg: params.baselinePitchBiasDeg,
+                    height_error_percent: params.baselineHeightErrorPercent
+                },
+                simulation_settings_for_reproducibility: {
+                    camera_position_m: { x: params.camX, y_height: params.camHeight, z: params.camZ },
+                    camera_pitch_deg: params.camPitch,
+                    camera_yaw_deg: params.camYaw,
+                    fov_deg: params.fov,
+                    grid_size_m: params.gridSize,
+                    grid_spacing_m: params.gridSpacing,
+                    pole_radius_m: params.poleRadius,
+                    ruler_graduation_m: params.segmentSize
+                },
+                summary_metrics: {
+                    proposed_decoupled_svm: computeMethodStats(samples, 'proposed'),
+                    traditional_calibration_dependent_svm: computeMethodStats(samples, 'baseline')
+                },
+                samples
+            };
+        }
+
+        function downloadTextFile(text, filename, mimeType) {
+            const blob = new Blob([text], { type: mimeType });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            link.click();
+            URL.revokeObjectURL(link.href);
+        }
+
+        function exportSVMJSON() {
+            const payload = buildExportPayload();
+            downloadTextFile(JSON.stringify(payload, null, 2), `svm_inputs_${makeTimestamp()}.json`, 'application/json;charset=utf-8');
+        }
+
+        function exportSVMCSV() {
+            const samples = collectSVMSamples();
+            const proposedStats = computeMethodStats(samples, 'proposed');
+            const baselineStats = computeMethodStats(samples, 'baseline');
+            const header = [
+                'sample_id',
+                'image_width_px',
+                'image_height_px',
+                'H_cam_m',
+                'x_top_px',
+                'y_top_px',
+                'x_bot_px',
+                'y_bot_px',
+                'y_hor_px',
+                'y_v_px',
+                'proposed_estimated_height_m',
+                'proposed_absolute_error_m',
+                'proposed_relative_error_percent',
+                'calibration_dependent_svm_estimated_height_m',
+                'calibration_dependent_svm_absolute_error_m',
+                'calibration_dependent_svm_relative_error_percent',
+                'calibration_dependent_svm_focal_error_percent',
+                'calibration_dependent_svm_pitch_bias_deg',
+                'calibration_dependent_svm_height_error_percent',
+                'ground_truth_height_m',
+                'proposed_valid',
+                'calibration_dependent_svm_valid',
+                'proposed_warning',
+                'calibration_dependent_svm_warning',
+                'batch_proposed_MRE_percent',
+                'batch_proposed_RMSE_m',
+                'batch_calibration_dependent_svm_MRE_percent',
+                'batch_calibration_dependent_svm_RMSE_m',
+                'batch_proposed_max_RE_percent',
+                'batch_calibration_dependent_svm_max_RE_percent',
+                'batch_valid_count_proposed',
+                'batch_valid_count_calibration_dependent_svm'
+            ];
+            const rows = samples.map(s => [
+                s.sample_id,
+                s.image_width_px,
+                s.image_height_px,
+                s.inputs.H_cam_m,
+                s.keypoints_for_visualization.x_top_px,
+                s.inputs.y_top_px,
+                s.keypoints_for_visualization.x_bot_px,
+                s.inputs.y_bot_px,
+                s.inputs.y_hor_px,
+                s.inputs.y_v_px,
+                s.estimated_height_m,
+                s.absolute_error_m,
+                s.relative_error_percent,
+                s.traditional_svm_baseline.estimated_height_m,
+                s.traditional_svm_baseline.absolute_error_m,
+                s.traditional_svm_baseline.relative_error_percent,
+                params.baselineFocalErrorPercent,
+                params.baselinePitchBiasDeg,
+                params.baselineHeightErrorPercent,
+                s.ground_truth_height_m,
+                s.valid,
+                s.traditional_svm_baseline.valid,
+                s.warning,
+                s.traditional_svm_baseline.warning,
+                proposedStats.mre_percent,
+                proposedStats.rmse_m,
+                baselineStats.mre_percent,
+                baselineStats.rmse_m,
+                proposedStats.max_relative_error_percent,
+                baselineStats.max_relative_error_percent,
+                proposedStats.valid_count,
+                baselineStats.valid_count
+            ]);
+            const csv = [header, ...rows].map(row => row.map(value => {
+                const text = String(value ?? '');
+                return `"${text.replace(/"/g, '""')}"`;
+            }).join(',')).join('\n');
+            downloadTextFile(csv, `svm_comparison_${makeTimestamp()}.csv`, 'text/csv;charset=utf-8');
+        }
+
+        function drawCircle(ctx, x, y, r, fillStyle, strokeStyle = '#ffffff') {
+            ctx.beginPath();
+            ctx.arc(x, y, r, 0, Math.PI * 2);
+            ctx.fillStyle = fillStyle;
+            ctx.fill();
+            ctx.lineWidth = Math.max(2, r * 0.25);
+            ctx.strokeStyle = strokeStyle;
+            ctx.stroke();
+        }
+
+        function drawLabel(ctx, text, x, y, fillStyle = 'rgba(255,255,255,0.90)', textStyle = '#111') {
+            const paddingX = 6;
+            const paddingY = 4;
+            const metrics = ctx.measureText(text);
+            const fontHeight = parseInt(ctx.font, 10) || 14;
+            const boxW = metrics.width + paddingX * 2;
+            const boxH = fontHeight + paddingY * 2;
+            const clampedX = Math.max(4, Math.min(x, ctx.canvas.width - boxW - 4));
+            const clampedY = Math.max(boxH + 4, Math.min(y, ctx.canvas.height - 4));
+            ctx.fillStyle = fillStyle;
+            ctx.fillRect(clampedX, clampedY - boxH, boxW, boxH);
+            ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+            ctx.strokeRect(clampedX, clampedY - boxH, boxW, boxH);
+            ctx.fillStyle = textStyle;
+            ctx.fillText(text, clampedX + paddingX, clampedY - paddingY);
+        }
+
+        function drawMeasurementOverlay(ctx, width, height, forExport = false) {
+            const scale = Math.max(1, width / 1600);
+            ctx.save();
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.font = `${Math.round(13 * scale)}px sans-serif`;
+            ctx.textBaseline = 'bottom';
+
+            const priors = computeGeometricPriors();
+            const yHor = priors.y_hor_px;
+            const xV = priors.x_v_px;
+            const yV = priors.y_v_px;
+
+            if (params.showHorizonLine && Number.isFinite(yHor)) {
+                ctx.save();
+                ctx.setLineDash([10 * scale, 7 * scale]);
+                ctx.lineWidth = 2 * scale;
+                ctx.strokeStyle = 'rgba(0, 150, 80, 0.95)';
+                const yDraw = Math.max(-height, Math.min(2 * height, yHor));
+                if (yDraw >= 0 && yDraw <= height) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, yDraw);
+                    ctx.lineTo(width, yDraw);
+                    ctx.stroke();
+                    drawLabel(ctx, `horizon / vanishing line  y_hor=${formatNumber(yHor, 2)}`, 12 * scale, yDraw - 8 * scale);
+                } else {
+                    drawLabel(ctx, `horizon off-frame  y_hor=${formatNumber(yHor, 2)}`, 12 * scale, yHor < 0 ? 24 * scale : height - 10 * scale);
+                }
+                ctx.restore();
+            }
+
+            if (params.showVerticalVP && Number.isFinite(yV)) {
+                ctx.save();
+                ctx.setLineDash([6 * scale, 6 * scale]);
+                ctx.lineWidth = 2 * scale;
+                ctx.strokeStyle = 'rgba(0, 90, 220, 0.85)';
+                const xLine = Number.isFinite(xV) ? Math.max(0, Math.min(width, xV)) : width / 2;
+                ctx.beginPath();
+                ctx.moveTo(xLine, 0);
+                ctx.lineTo(xLine, height);
+                ctx.stroke();
+
+                if (xV >= 0 && xV <= width && yV >= 0 && yV <= height) {
+                    drawCircle(ctx, xV, yV, 5 * scale, 'rgba(0,90,220,0.95)');
+                    drawLabel(ctx, `vertical VP  y_v=${formatNumber(yV, 2)}`, xV + 8 * scale, yV - 8 * scale);
+                } else {
+                    const yLabel = yV < 0 ? 24 * scale : height - 10 * scale;
+                    drawLabel(ctx, `vertical VP off-frame  y_v=${formatNumber(yV, 2)}`, xLine + 8 * scale, yLabel);
+                }
+                ctx.restore();
+            }
+
+            const samples = collectSVMSamples();
+            samples.forEach(sample => {
+                const xTop = sample.keypoints_for_visualization.x_top_px;
+                const xBot = sample.keypoints_for_visualization.x_bot_px;
+                const yTop = sample.inputs.y_top_px;
+                const yBot = sample.inputs.y_bot_px;
+                const xMid = (xTop + xBot) / 2;
+
+                if (!Number.isFinite(xTop) || !Number.isFinite(xBot) || !Number.isFinite(yTop) || !Number.isFinite(yBot)) return;
+
+                if (params.showKeypoints) {
+                    ctx.save();
+                    ctx.setLineDash([]);
+                    ctx.lineWidth = 2.5 * scale;
+                    ctx.strokeStyle = 'rgba(230, 120, 0, 0.95)';
+                    ctx.beginPath();
+                    ctx.moveTo(xTop, yTop);
+                    ctx.lineTo(xBot, yBot);
+                    ctx.stroke();
+                    drawCircle(ctx, xTop, yTop, 5 * scale, 'rgba(220,40,40,0.95)');
+                    drawCircle(ctx, xBot, yBot, 5 * scale, 'rgba(40,80,220,0.95)');
+                    drawLabel(ctx, `top y=${formatNumber(yTop, 1)}`, xTop + 8 * scale, yTop - 8 * scale);
+                    drawLabel(ctx, `bottom y=${formatNumber(yBot, 1)}`, xBot + 8 * scale, yBot + 24 * scale);
+                    ctx.restore();
+                }
+
+                const heightText = sample.valid
+                    ? (params.showErrorEvaluation
+                        ? (params.compareTraditionalSVM
+                            ? `#${sample.sample_id}  Proposed SVM method RE=${formatNumber(sample.relative_error_percent, 3)}% | Calibration-dependent SVM RE=${formatNumber(sample.traditional_svm_baseline.relative_error_percent, 3)}%`
+                            : `#${sample.sample_id}  H_est=${formatNumber(sample.estimated_height_m, 3)} m | RE=${formatNumber(sample.relative_error_percent, 3)}%`)
+                        : `#${sample.sample_id}  H_est=${formatNumber(sample.estimated_height_m, 3)} m`)
+                    : `#${sample.sample_id}  invalid`;
+                drawLabel(ctx, heightText, xMid + 10 * scale, Math.min(yTop, yBot) - 26 * scale, 'rgba(255,255,255,0.92)', sample.valid ? '#111' : '#b00020');
+            });
+            ctx.restore();
+        }
+
+        function setOutputPanelMode(mode) {
+            outputPanelMode = mode;
+        }
+
+        function resetOutputPanelToLive() {
+            outputPanelMode = 'live';
+            lastFullFactorialSummary = null;
+        }
+
+        function formatRatioPercent(value, digits = 2) {
+            return Number.isFinite(value) ? `${formatNumber(value * 100, digits)}%` : 'NaN';
+        }
+
+        function renderFullFactorialOutputPanel(summary) {
+            if (!svmOutputDiv || !summary) return;
+            const proposedVisible = summary.visible_only_stats.proposed_decoupled_svm;
+            const baselineVisible = summary.visible_only_stats.traditional_calibration_dependent_svm;
+            const proposedAll = summary.all_rows_stats.proposed_decoupled_svm;
+            const baselineAll = summary.all_rows_stats.traditional_calibration_dependent_svm;
+            const proposedBetter = Number.isFinite(proposedVisible.mre_percent) && Number.isFinite(baselineVisible.mre_percent)
+                ? proposedVisible.mre_percent <= baselineVisible.mre_percent
+                : false;
+            const winnerText = proposedBetter ? 'Proposed SVM method' : 'Calibration-dependent SVM';
+            const winnerColor = proposedBetter ? '#166534' : '#b00020';
+
+            svmOutputDiv.innerHTML = `
+                <b>Full-Factorial Batch Metrics</b><br>
+                <span class="muted">Five swept variables: Position Z × Pitch × Yaw × FOV × Pole H.</span><br>
+                <div class="metric-grid">
+                    <div class="metric-card">
+                        <b>Rows</b>
+                        <div class="metric-line"><span>Total</span><code>${formatInteger(summary.total_rows_generated)}</code></div>
+                        <div class="metric-line"><span>Visible</span><code>${formatInteger(summary.visible_rows_count)}</code></div>
+                        <div class="metric-line"><span>Visible ratio</span><code>${formatRatioPercent(summary.visible_rows_ratio, 2)}</code></div>
+                    </div>
+                    <div class="metric-card">
+                        <b>Winner by visible MRE</b>
+                        <span style="color:${winnerColor}">${winnerText}</span><br>
+                        <span class="muted">Calibration-dependent SVM bias: focal ${formatNumber(params.baselineFocalErrorPercent, 2)}%, pitch ${formatNumber(params.baselinePitchBiasDeg, 2)}°, height ${formatNumber(params.baselineHeightErrorPercent, 2)}%.</span>
+                    </div>
+                    <div class="metric-card">
+                        <b>Proposed SVM method</b>
+                        <div class="metric-line"><span>MRE</span><code>${formatNumber(proposedVisible.mre_percent, 4)}%</code></div>
+                        <div class="metric-line"><span>RMSE</span><code>${formatNumber(proposedVisible.rmse_cm, 3)} cm</code></div>
+                        <div class="metric-line"><span>Max RE</span><code>${formatNumber(proposedVisible.max_relative_error_percent, 4)}%</code></div>
+                        <div class="metric-line"><span>≤1% ratio</span><code>${formatRatioPercent(proposedVisible.within_1_percent_ratio, 2)}</code></div>
+                    </div>
+                    <div class="metric-card">
+                        <b>Calibration-dependent SVM</b>
+                        <div class="metric-line"><span>MRE</span><code>${formatNumber(baselineVisible.mre_percent, 4)}%</code></div>
+                        <div class="metric-line"><span>RMSE</span><code>${formatNumber(baselineVisible.rmse_cm, 3)} cm</code></div>
+                        <div class="metric-line"><span>Max RE</span><code>${formatNumber(baselineVisible.max_relative_error_percent, 4)}%</code></div>
+                        <div class="metric-line"><span>≤1% ratio</span><code>${formatRatioPercent(baselineVisible.within_1_percent_ratio, 2)}</code></div>
+                    </div>
+                </div>
+                <span class="muted">Visible-only metrics are recommended for reporting because they exclude rows where top or bottom endpoints are outside the image frame.</span><br>
+                <span class="muted">All-row valid samples: proposed SVM method ${formatInteger(proposedAll.valid_count)}/${formatInteger(proposedAll.total_count)}; calibration-dependent SVM ${formatInteger(baselineAll.valid_count)}/${formatInteger(baselineAll.total_count)}.</span>
+            `;
+        }
+
+        function updateSVMOutputPanel() {
+            if (!svmOutputDiv) return;
+            if (outputPanelMode === 'fullFactorial' && lastFullFactorialSummary) {
+                renderFullFactorialOutputPanel(lastFullFactorialSummary);
+                return;
+            }
+            const samples = collectSVMSamples();
+            if (samples.length === 0) {
+                svmOutputDiv.innerHTML = '<b>SVM Simulation Evaluation</b><br>Place at least one pole marker, or use <code>Generate Validation Batch</code>.';
+                return;
+            }
+            const first = samples[0];
+            const proposedStats = computeMethodStats(samples, 'proposed');
+            const baselineStats = computeMethodStats(samples, 'baseline');
+            const withinText = first.within_1_percent ? 'YES' : 'NO';
+            const baseline = first.traditional_svm_baseline;
+            const baselineWithinText = baseline.within_1_percent ? 'YES' : 'NO';
+            const comparisonColor = (Number.isFinite(first.relative_error_percent) && Number.isFinite(baseline.relative_error_percent) && first.relative_error_percent <= baseline.relative_error_percent) ? '#166534' : '#b00020';
+            svmOutputDiv.innerHTML = `
+                <b>Decoupled SVM Inputs for Pole #${first.sample_id}</b><br>
+                <code>H_cam</code>: ${formatNumber(first.inputs.H_cam_m, 4)} m<br>
+                <code>y_top</code>: ${formatNumber(first.inputs.y_top_px, 2)} px; <code>y_bot</code>: ${formatNumber(first.inputs.y_bot_px, 2)} px<br>
+                <code>y_hor</code>: ${formatNumber(first.inputs.y_hor_px, 2)} px; <code>y_v</code>: ${formatNumber(first.inputs.y_v_px, 2)} px<br>
+                <b>Ground truth:</b> ${formatNumber(first.ground_truth_height_m, 4)} m <span style="color:#666">(evaluation only)</span><br>
+                <hr style="border:0;border-top:1px solid #ddd;margin:8px 0;">
+                <b>Single-Sample Comparison</b><br>
+                Proposed SVM method: ${formatNumber(first.estimated_height_m, 4)} m | RE=${formatNumber(first.relative_error_percent, 4)}% <span style="color:${first.within_1_percent ? '#166534' : '#b00020'}">within 1%: ${withinText}</span><br>
+                Calibration-dependent SVM: ${formatNumber(baseline.estimated_height_m, 4)} m | RE=${formatNumber(baseline.relative_error_percent, 4)}% <span style="color:${baseline.within_1_percent ? '#166534' : '#b00020'}">within 1%: ${baselineWithinText}</span><br>
+                <span style="color:${comparisonColor}">Single-sample winner: ${first.relative_error_percent <= baseline.relative_error_percent ? 'Proposed SVM method' : 'Calibration-dependent SVM'}</span><br>
+                <span style="color:#666">Calibration-dependent SVM bias: focal ${formatNumber(params.baselineFocalErrorPercent, 2)}%, pitch ${formatNumber(params.baselinePitchBiasDeg, 2)}°, height ${formatNumber(params.baselineHeightErrorPercent, 2)}%.</span>
+                <hr style="border:0;border-top:1px solid #ddd;margin:8px 0;">
+                <b>Batch Metrics</b><br>
+                Proposed SVM method MRE: ${formatNumber(proposedStats.mre_percent, 4)}% | RMSE: ${formatNumber(proposedStats.rmse_cm, 3)} cm | Max RE: ${formatNumber(proposedStats.max_relative_error_percent, 4)}%<br>
+                Calibration-dependent SVM MRE: ${formatNumber(baselineStats.mre_percent, 4)}% | RMSE: ${formatNumber(baselineStats.rmse_cm, 3)} cm | Max RE: ${formatNumber(baselineStats.max_relative_error_percent, 4)}%<br>
+                Valid samples: proposed SVM method ${proposedStats.valid_count}/${proposedStats.total_count}; calibration-dependent SVM ${baselineStats.valid_count}/${baselineStats.total_count}<br>
+                <span style="color:#666">Pixel quantization: ${params.usePixelQuantization ? 'ON' : 'OFF'}; ground truth is not used by either height formula.</span>
+            `;
+        }
+
+        function onKeyDown(event) {
+            keysPressed[event.code] = true;
+            if(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) {
+                event.preventDefault();
+            }
+        }
+        function onKeyUp(event) {
+            keysPressed[event.code] = false;
+        }
+
+        function updateMovement(deltaTime) {
+            const moveSpeed = 5.0 * deltaTime;
+            let hasMoved = false;
+
+            const yawRad = THREE.MathUtils.degToRad(params.camYaw);
+            const forwardX = -Math.sin(yawRad);
+            const forwardZ = -Math.cos(yawRad);
+            const rightX = Math.cos(yawRad);
+            const rightZ = -Math.sin(yawRad);
+
+            if (keysPressed['KeyW'] || keysPressed['ArrowUp']) {
+                params.camX += forwardX * moveSpeed;
+                params.camZ += forwardZ * moveSpeed;
+                hasMoved = true;
+            }
+            if (keysPressed['KeyS'] || keysPressed['ArrowDown']) {
+                params.camX -= forwardX * moveSpeed;
+                params.camZ -= forwardZ * moveSpeed;
+                hasMoved = true;
+            }
+            if (keysPressed['KeyA'] || keysPressed['ArrowLeft']) {
+                params.camX -= rightX * moveSpeed;
+                params.camZ -= rightZ * moveSpeed;
+                hasMoved = true;
+            }
+            if (keysPressed['KeyD'] || keysPressed['ArrowRight']) {
+                params.camX += rightX * moveSpeed;
+                params.camZ += rightZ * moveSpeed;
+                hasMoved = true;
+            }
+            if (keysPressed['Space']) {
+                params.camHeight += moveSpeed;
+                hasMoved = true;
+            }
+            if (keysPressed['ShiftLeft'] || keysPressed['ShiftRight']) {
+                params.camHeight -= moveSpeed;
+                if(params.camHeight < 0.1) params.camHeight = 0.1;
+                hasMoved = true;
+            }
+
+            if (hasMoved) {
+                updateCameraPose();
+                if(guiControllers.camX) guiControllers.camX.updateDisplay();
+                if(guiControllers.camZ) guiControllers.camZ.updateDisplay();
+                if(guiControllers.camHeight) guiControllers.camHeight.updateDisplay();
+            }
+        }
+
+        function createGrid() {
+            if (gridHelper) scene.remove(gridHelper);
+            const divisions = Math.floor(params.gridSize / params.gridSpacing);
+            gridHelper = new THREE.GridHelper(params.gridSize, divisions, 0x999999, 0xdddddd);
+            scene.add(gridHelper);
+        }
+
+        function updateCameraPose() {
+            camera.position.set(params.camX, params.camHeight, params.camZ);
+
+            const pitchRad = THREE.MathUtils.degToRad(-params.camPitch);
+            const yawRad = THREE.MathUtils.degToRad(params.camYaw);
+
+            camera.rotation.order = 'YXZ';
+            camera.rotation.y = yawRad;
+            camera.rotation.x = pitchRad;
+
+            camera.updateProjectionMatrix();
+        }
+
+        function createPoleMaterial(isGhost = false) {
+            return new THREE.ShaderMaterial({
+                uniforms: {
+                    uColor1: { value: new THREE.Color(0.8, 0.1, 0.1) },
+                    uColor2: { value: new THREE.Color(1, 1, 1) },
+                    uSegmentSize: { value: params.segmentSize },
+                    uOpacity: { value: isGhost ? 0.4 : 1.0 }
+                },
+                vertexShader: `
+                    varying float vY;
+                    void main() {
+                        vY = position.y;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 uColor1;
+                    uniform vec3 uColor2;
+                    uniform float uSegmentSize;
+                    uniform float uOpacity;
+                    varying float vY;
+                    void main() {
+                        float segment = floor(vY / uSegmentSize);
+                        vec3 color = mix(uColor1, uColor2, mod(segment, 2.0));
+                        gl_FragColor = vec4(color, uOpacity);
+                    }
+                `,
+                transparent: true,
+                side: THREE.DoubleSide
+            });
+        }
+
+        function createPoleGeometry(height) {
+            const geometry = new THREE.CylinderGeometry(params.poleRadius, params.poleRadius, height, 32);
+            geometry.translate(0, height / 2, 0);
+            return geometry;
+        }
+
+        function createGhostPole() {
+            const geometry = createPoleGeometry(params.poleHeight);
+            const material = createPoleMaterial(true);
+            ghostPole = new THREE.Mesh(geometry, material);
+            ghostPole.userData.visualHeight = params.poleHeight;
+            ghostPole.visible = false;
+            scene.add(ghostPole);
+        }
+
+        function updatePoleGeometry() {
+            const newGhostGeo = createPoleGeometry(params.poleHeight);
+            ghostPole.geometry.dispose();
+            ghostPole.geometry = newGhostGeo;
+            ghostPole.userData.visualHeight = params.poleHeight;
+            ghostPole.material.uniforms.uSegmentSize.value = params.segmentSize;
+            poles.forEach(mesh => {
+                const newGeo = createPoleGeometry(params.poleHeight);
+                mesh.geometry.dispose();
+                mesh.geometry = newGeo;
+                mesh.userData.visualHeight = params.poleHeight;
+                mesh.material.uniforms.uSegmentSize.value = params.segmentSize;
+            });
+        }
+
+        function onMouseWheel(event) {
+            event.preventDefault();
+            const zoomSpeed = 0.05;
+            let newFov = params.fov + event.deltaY * zoomSpeed;
+            newFov = THREE.MathUtils.clamp(newFov, 10, 120);
+            params.fov = newFov;
+            camera.fov = newFov;
+            camera.updateProjectionMatrix();
+            if(guiControllers.fov) guiControllers.fov.updateDisplay();
+        }
+
+        function onPointerMove(event) {
+            if (isMiddleDragging) {
+                const deltaX = event.clientX - previousMousePosition.x;
+                const deltaY = event.clientY - previousMousePosition.y;
+                const sensitivity = 0.2;
+
+                params.camYaw -= deltaX * sensitivity;
+                params.camPitch += deltaY * sensitivity;
+
+                params.camPitch = THREE.MathUtils.clamp(params.camPitch, -90, 90);
+
+                updateCameraPose();
+                if(guiControllers.camYaw) guiControllers.camYaw.updateDisplay();
+                if(guiControllers.camPitch) guiControllers.camPitch.updateDisplay();
+                previousMousePosition = { x: event.clientX, y: event.clientY };
+                ghostPole.visible = false;
+                return;
+            }
+
+            pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+            pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(pointer, camera);
+            const target = new THREE.Vector3();
+            raycaster.ray.intersectPlane(groundPlane, target);
+
+            if (target) {
+                const x = Math.round(target.x / params.gridSpacing) * params.gridSpacing;
+                const z = Math.round(target.z / params.gridSpacing) * params.gridSpacing;
+                ghostPole.position.set(x, 0, z);
+                ghostPole.visible = true;
+            } else {
+                ghostPole.visible = false;
+            }
+        }
+
+        function onPointerDown(event) {
+            if (event.target.closest('.lil-gui')) return;
+
+            if (event.button === 1 || (event.button === 0 && event.ctrlKey)) {
+                isMiddleDragging = true;
+                previousMousePosition = { x: event.clientX, y: event.clientY };
+                document.body.style.cursor = 'move';
+                event.preventDefault();
+                return;
+            }
+
+            if (!ghostPole.visible) return;
+
+            if (event.button === 0) {
+                addPoleAt(ghostPole.position.x, ghostPole.position.z);
+            } else if (event.button === 2) {
+                removePoleAt(ghostPole.position.x, ghostPole.position.z);
+            }
+        }
+
+        function onPointerUp(event) {
+            if (event.button === 1 || (event.button === 0 && event.ctrlKey)) {
+                isMiddleDragging = false;
+                document.body.style.cursor = 'default';
+            }
+        }
+
+        function addPoleAt(x, z) {
+            addPoleAtWithHeight(x, z, params.poleHeight);
+        }
+
+        function addPoleAtWithHeight(x, z, height) {
+            resetOutputPanelToLive();
+            const exists = poles.find(p => p.position.distanceTo(new THREE.Vector3(x, 0, z)) < 0.01);
+            if (exists) return;
+            const material = createPoleMaterial(false);
+            const geometry = createPoleGeometry(height);
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.position.set(x, 0, z);
+            mesh.userData.visualHeight = height;
+            scene.add(mesh);
+            poles.push(mesh);
+        }
+
+        function removePoleAt(x, z) {
+            resetOutputPanelToLive();
+            const index = poles.findIndex(p => p.position.distanceTo(new THREE.Vector3(x, 0, z)) < 0.01);
+            if (index !== -1) {
+                const mesh = poles[index];
+                scene.remove(mesh);
+                mesh.geometry.dispose();
+                mesh.material.dispose();
+                poles.splice(index, 1);
+            }
+        }
+
+        function clearPoles() {
+            resetOutputPanelToLive();
+            poles.forEach(mesh => {
+                scene.remove(mesh);
+                mesh.geometry.dispose();
+                mesh.material.dispose();
+            });
+            poles = [];
+        }
+
+        function randomFloat(min, max) {
+            return min + Math.random() * (max - min);
+        }
+
+        function generateValidationBatch() {
+            clearPoles();
+            const count = Math.max(1, Math.min(300, Math.round(params.batchSize)));
+            const forward = getForwardHorizontalDirection();
+            const right = new THREE.Vector3(forward.z, 0, -forward.x).normalize();
+            const aspect = window.innerWidth / window.innerHeight;
+            const hFovRad = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(params.fov) / 2) * aspect);
+            const cameraGround = new THREE.Vector3(params.camX, 0, params.camZ);
+            const heightMin = Math.min(params.randomHeightMin, params.randomHeightMax);
+            const heightMax = Math.max(params.randomHeightMin, params.randomHeightMax);
+
+            for (let i = 0; i < count; i++) {
+                const distance = randomFloat(4.5, 18.0);
+                const lateralLimit = Math.max(0.5, Math.tan(hFovRad / 2) * distance * 0.32);
+                const lateral = randomFloat(-lateralLimit, lateralLimit);
+                const pos = cameraGround.clone().add(forward.clone().multiplyScalar(distance)).add(right.clone().multiplyScalar(lateral));
+                const height = randomFloat(heightMin, heightMax);
+                addPoleAtWithHeight(pos.x, pos.z, height);
+            }
+        }
+
+
+        function decimalPlaces(value) {
+            const text = String(value);
+            if (text.includes('e-')) {
+                const [, exp] = text.split('e-');
+                return Number(exp) || 0;
+            }
+            const dot = text.indexOf('.');
+            return dot === -1 ? 0 : text.length - dot - 1;
+        }
+
+        function roundForStep(value, step) {
+            const digits = Math.min(10, Math.max(0, decimalPlaces(step) + 2));
+            return Number(Number(value).toFixed(digits));
+        }
+
+        function makeNumericRange(minValue, maxValue, stepValue) {
+            const min = Number(minValue);
+            const max = Number(maxValue);
+            const rawStep = Number(stepValue);
+            if (!Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(rawStep) || rawStep === 0) {
+                return [];
+            }
+
+            const direction = max >= min ? 1 : -1;
+            const step = Math.abs(rawStep) * direction;
+            const eps = Math.abs(step) * 1e-7 + 1e-9;
+            const values = [];
+            let current = min;
+            let guard = 0;
+            const maxGuard = 1000000;
+
+            while ((direction > 0 && current <= max + eps) || (direction < 0 && current >= max - eps)) {
+                values.push(roundForStep(current, rawStep));
+                current += step;
+                guard++;
+                if (guard > maxGuard) {
+                    console.warn('Range generation stopped by guard. Check min/max/step settings.');
+                    break;
+                }
+            }
+
+            if (values.length > 0) {
+                const last = values[values.length - 1];
+                if (Math.abs(last - max) > eps && Math.abs(max - min) > eps) {
+                    // Keep interval semantics strict: do not force append max when it is not on the step grid.
+                    // This prevents accidental non-uniform final intervals.
+                }
+            }
+            return values;
+        }
+
+        function getFullFactorialRanges() {
+            return {
+                camHeight_m: makeNumericRange(params.fullCamHeightMin, params.fullCamHeightMax, params.fullCamHeightStep),
+                pitch_deg: makeNumericRange(params.fullPitchMin, params.fullPitchMax, params.fullPitchStep),
+                yaw_deg: makeNumericRange(params.fullYawMin, params.fullYawMax, params.fullYawStep),
+                fov_deg: makeNumericRange(params.fullFovMin, params.fullFovMax, params.fullFovStep),
+                poleHeight_m: makeNumericRange(params.fullPoleHeightMin, params.fullPoleHeightMax, params.fullPoleHeightStep)
+            };
+        }
+
+        function estimateFullFactorialCountFromRanges(ranges) {
+            return ranges.camHeight_m.length *
+                ranges.pitch_deg.length *
+                ranges.yaw_deg.length *
+                ranges.fov_deg.length *
+                ranges.poleHeight_m.length;
+        }
+
+        function formatInteger(value) {
+            return Number.isFinite(value) ? Math.round(value).toLocaleString('en-US') : 'NaN';
+        }
+
+        function fullFactorialRangeText(ranges) {
+            return [
+                `Position Z: ${ranges.camHeight_m.length} values`,
+                `Pitch: ${ranges.pitch_deg.length} values`,
+                `Yaw: ${ranges.yaw_deg.length} values`,
+                `FOV: ${ranges.fov_deg.length} values`,
+                `Pole H: ${ranges.poleHeight_m.length} values`
+            ].join(' | ');
+        }
+
+        function previewFullFactorialCount() {
+            const ranges = getFullFactorialRanges();
+            const total = estimateFullFactorialCountFromRanges(ranges);
+            const message = `Full-factorial combinations = ${formatInteger(total)}. ${fullFactorialRangeText(ranges)}.`;
+            params.fullFactorialStatus = message;
+            if (svmOutputDiv) {
+                svmOutputDiv.innerHTML = `<b>Full-Factorial Preview</b><br>${message}<br><small>The five swept variables are Cartesian-product combined. Distance is only an automatic visibility-placement nuisance parameter.</small>`;
+            }
+            alert(message);
+        }
+
+        function saveCurrentSweepState() {
+            return {
+                camHeight: params.camHeight,
+                camPitch: params.camPitch,
+                camYaw: params.camYaw,
+                fov: params.fov,
+                cameraFov: camera.fov
+            };
+        }
+
+        function restoreSweepState(saved) {
+            params.camHeight = saved.camHeight;
+            params.camPitch = saved.camPitch;
+            params.camYaw = saved.camYaw;
+            params.fov = saved.fov;
+            camera.fov = saved.cameraFov;
+            updateCameraPose();
+            syncGUIControllers();
+        }
+
+        function syncGUIControllers() {
+            Object.keys(guiControllers).forEach(key => {
+                const controller = guiControllers[key];
+                if (controller && typeof controller.updateDisplay === 'function') {
+                    controller.updateDisplay();
+                }
+            });
+        }
+
+        function applySweepCameraSetting(camHeight, pitch, yaw, fov) {
+            params.camHeight = camHeight;
+            params.camPitch = pitch;
+            params.camYaw = yaw;
+            params.fov = fov;
+            camera.fov = fov;
+            updateCameraPose();
+        }
+
+        function isProjectedPointInsideFrame(point, marginPx = 0) {
+            const size = getImageSize();
+            return point &&
+                point.insideFrame &&
+                point.x >= marginPx &&
+                point.x <= size.width - marginPx &&
+                point.y >= marginPx &&
+                point.y <= size.height - marginPx;
+        }
+
+        function getPolePositionAtDistance(distance) {
+            const forward = getForwardHorizontalDirection();
+            const cameraGround = new THREE.Vector3(params.camX, 0, params.camZ);
+            return cameraGround.clone().add(forward.clone().multiplyScalar(distance));
+        }
+
+        function evaluatePoleVisibilityAtDistance(poleHeight, distance) {
+            const position = getPolePositionAtDistance(distance);
+            const topWorld = new THREE.Vector3(position.x, poleHeight, position.z);
+            const bottomWorld = new THREE.Vector3(position.x, 0, position.z);
+            const top = projectWorldToPixel(topWorld);
+            const bottom = projectWorldToPixel(bottomWorld);
+            const margin = Math.max(0, Number(params.fullVisibilityMarginPx) || 0);
+            const topInside = isProjectedPointInsideFrame(top, margin);
+            const bottomInside = isProjectedPointInsideFrame(bottom, margin);
+            return {
+                position,
+                distance_m: distance,
+                top_inside_frame: topInside,
+                bottom_inside_frame: bottomInside,
+                both_inside_frame: topInside && bottomInside,
+                top_px: { x: top.x, y: top.y, ndcZ: top.ndcZ },
+                bottom_px: { x: bottom.x, y: bottom.y, ndcZ: bottom.ndcZ }
+            };
+        }
+
+        function findPolePlacementForSweep(poleHeight) {
+            const minDistance = Math.max(0.1, Number(params.fullPoleDistanceMin) || 2);
+            const maxDistance = Math.max(minDistance, Number(params.fullPoleDistanceMax) || 80);
+            const step = Math.max(0.05, Number(params.fullPoleDistanceStep) || 0.5);
+
+            let best = null;
+            let bestScore = Infinity;
+            const size = getImageSize();
+            const centerX = size.width / 2;
+            const centerY = size.height / 2;
+
+            for (let distance = minDistance; distance <= maxDistance + step * 1e-7; distance += step) {
+                const visibility = evaluatePoleVisibilityAtDistance(poleHeight, roundForStep(distance, step));
+                if (visibility.both_inside_frame) {
+                    // Prefer a centered but not extremely far placement.
+                    const midY = (visibility.top_px.y + visibility.bottom_px.y) / 2;
+                    const midX = (visibility.top_px.x + visibility.bottom_px.x) / 2;
+                    const centerPenalty = Math.abs(midY - centerY) + Math.abs(midX - centerX) * 0.25;
+                    const distancePenalty = visibility.distance_m * 0.02;
+                    const score = centerPenalty + distancePenalty;
+                    if (score < bestScore) {
+                        best = visibility;
+                        bestScore = score;
+                    }
+                }
+            }
+
+            if (best) return best;
+
+            // If no placement can keep both endpoints visible under this camera pose,
+            // still return a deterministic mid-range placement so that the full
+            // Cartesian-product row is not dropped. The row will be flagged as not visible.
+            const fallbackDistance = roundForStep((minDistance + maxDistance) / 2, step);
+            return evaluatePoleVisibilityAtDistance(poleHeight, fallbackDistance);
+        }
+
+        function computeFullFactorialSample(sampleIndex, camHeight, pitch, yaw, fov, poleHeight) {
+            applySweepCameraSetting(camHeight, pitch, yaw, fov);
+            const placement = findPolePlacementForSweep(poleHeight);
+            const virtualPole = {
+                position: new THREE.Vector3(placement.position.x, 0, placement.position.z),
+                userData: { visualHeight: poleHeight }
+            };
+            const sample = computeSVMMeasurementForPole(virtualPole, sampleIndex);
+
+            sample.sweep_mode = 'full_factorial_cartesian_product';
+            sample.sweep_parameters = {
+                position_z_m: camHeight,
+                pitch_deg: pitch,
+                yaw_deg: yaw,
+                fov_deg: fov,
+                pole_h_m: poleHeight
+            };
+            sample.pole_world_position_m = {
+                x: placement.position.x,
+                y: 0,
+                z: placement.position.z,
+                distance_from_camera_ground_projection_m: placement.distance_m
+            };
+            sample.visibility = {
+                top_inside_frame: placement.top_inside_frame,
+                bottom_inside_frame: placement.bottom_inside_frame,
+                both_inside_frame: placement.both_inside_frame,
+                visibility_margin_px: Math.max(0, Number(params.fullVisibilityMarginPx) || 0)
+            };
+            sample.uses_fixed_swept_variables = ['Position Z (camera height)', 'Pitch', 'Yaw', 'FOV', 'Pole H'];
+            sample.note = `${sample.note} Full-factorial row is retained even when endpoints are outside the image; use visibility.both_inside_frame to filter rows that are feasible for the visual pipeline.`;
+
+            return sample;
+        }
+
+        function computeVisibilityAwareStats(samples, method = 'proposed') {
+            const visibleSamples = samples.filter(s => s.visibility && s.visibility.both_inside_frame);
+            return computeMethodStats(visibleSamples, method);
+        }
+
+        function buildFullFactorialSummary(samples, ranges, totalCount) {
+            const visibleCount = samples.filter(s => s.visibility && s.visibility.both_inside_frame).length;
+            const proposedValidCount = samples.filter(s => s.valid).length;
+            const baselineValidCount = samples.filter(s => s.traditional_svm_baseline && s.traditional_svm_baseline.valid).length;
+            return {
+                created_at: new Date().toISOString(),
+                sweep_mode: 'full_factorial_cartesian_product',
+                description: 'Each exported row corresponds to one Cartesian-product combination of Position Z, Pitch, Yaw, FOV, and Pole H. Pole distance is automatically selected only to keep endpoints visible when possible, and is not treated as a swept variable.',
+                default_range_basis: 'Camera-height/pitch/yaw/FOV defaults follow the manuscript simulation envelope; Pole H follows the empirical maize-height range approximately 0.64-2.70 m.',
+                ranges_used: {
+                    position_z_m: ranges.camHeight_m,
+                    pitch_deg: ranges.pitch_deg,
+                    yaw_deg: ranges.yaw_deg,
+                    fov_deg: ranges.fov_deg,
+                    pole_h_m: ranges.poleHeight_m
+                },
+                nuisance_placement_settings: {
+                    fullPoleDistanceMin_m: params.fullPoleDistanceMin,
+                    fullPoleDistanceMax_m: params.fullPoleDistanceMax,
+                    fullPoleDistanceStep_m: params.fullPoleDistanceStep,
+                    visibility_margin_px: params.fullVisibilityMarginPx
+                },
+                total_combinations_expected: totalCount,
+                total_rows_generated: samples.length,
+                visible_rows_count: visibleCount,
+                visible_rows_ratio: samples.length > 0 ? visibleCount / samples.length : NaN,
+                proposed_valid_count_all_rows: proposedValidCount,
+                baseline_valid_count_all_rows: baselineValidCount,
+                all_rows_stats: {
+                    proposed_decoupled_svm: computeMethodStats(samples, 'proposed'),
+                    traditional_calibration_dependent_svm: computeMethodStats(samples, 'baseline')
+                },
+                visible_only_stats: {
+                    proposed_decoupled_svm: computeVisibilityAwareStats(samples, 'proposed'),
+                    traditional_calibration_dependent_svm: computeVisibilityAwareStats(samples, 'baseline')
+                },
+                proposed_equation_29: 'H_obj = H_cam * (1 - ((y_top-y_hor)/(y_bot-y_hor))*((y_bot-y_v)/(y_top-y_v)))',
+                proposed_calculation_inputs: ['H_cam_m', 'y_top_px', 'y_bot_px', 'y_hor_px', 'y_v_px'],
+                calibration_dependent_svm_inputs: ['x_top_px', 'y_top_px', 'x_bot_px', 'y_bot_px', 'H_cam_m', 'estimated_focal_length_px', 'estimated_pitch_deg'],
+                use_pixel_quantization_for_calculation: params.usePixelQuantization
+            };
+        }
+
+        function updateFullFactorialOutput(summary) {
+            params.fullFactorialStatus = `Generated ${summary.total_rows_generated} rows; visible ${summary.visible_rows_count}.`;
+            lastFullFactorialSummary = summary;
+            setOutputPanelMode('fullFactorial');
+            renderFullFactorialOutputPanel(summary);
+        }
+
+        function generateFullFactorialSamples(options = {}) {
+            const ranges = getFullFactorialRanges();
+            const total = estimateFullFactorialCountFromRanges(ranges);
+
+            if (total <= 0) {
+                alert('Full-factorial batch cannot run: at least one range is empty. Check min/max/step settings.');
+                return null;
+            }
+
+            const maxRows = Math.max(1, Math.round(Number(params.fullFactorialMaxRows) || 300000));
+            if (total > maxRows) {
+                const proceed = confirm(`This full-factorial batch will generate ${formatInteger(total)} rows, exceeding the current safety limit ${formatInteger(maxRows)}. Continue anyway? Large JSON/CSV exports may freeze the browser.`);
+                if (!proceed) return null;
+            }
+
+            const saved = saveCurrentSweepState();
+            const samples = [];
+            let sampleIndex = 0;
+
+            try {
+                for (const camHeight of ranges.camHeight_m) {
+                    for (const pitch of ranges.pitch_deg) {
+                        for (const yaw of ranges.yaw_deg) {
+                            for (const fov of ranges.fov_deg) {
+                                for (const poleHeight of ranges.poleHeight_m) {
+                                    const sample = computeFullFactorialSample(sampleIndex, camHeight, pitch, yaw, fov, poleHeight);
+                                    samples.push(sample);
+                                    sampleIndex++;
+                                }
+                            }
+                        }
+                    }
+                }
+            } finally {
+                restoreSweepState(saved);
+            }
+
+            const summary = buildFullFactorialSummary(samples, ranges, total);
+            updateFullFactorialOutput(summary);
+
+            if (options.summaryOnly) {
+                return { summary, samples: [] };
+            }
+            return { summary, samples };
+        }
+
+        function fullFactorialCSVHeader() {
+            return [
+                'sample_id',
+                'sweep_position_z_m',
+                'sweep_pitch_deg',
+                'sweep_yaw_deg',
+                'sweep_fov_deg',
+                'sweep_pole_h_m',
+                'pole_x_m',
+                'pole_z_m',
+                'pole_distance_from_camera_ground_m',
+                'top_inside_frame',
+                'bottom_inside_frame',
+                'both_inside_frame',
+                'image_width_px',
+                'image_height_px',
+                'H_cam_m',
+                'x_top_px',
+                'y_top_px',
+                'x_bot_px',
+                'y_bot_px',
+                'y_hor_px',
+                'y_v_px',
+                'raw_x_top_px',
+                'raw_y_top_px',
+                'raw_x_bot_px',
+                'raw_y_bot_px',
+                'raw_y_hor_px',
+                'raw_y_v_px',
+                'proposed_estimated_height_m',
+                'proposed_absolute_error_m',
+                'proposed_absolute_error_cm',
+                'proposed_relative_error_percent',
+                'proposed_within_1_percent',
+                'proposed_valid',
+                'proposed_warning',
+                'calibration_dependent_svm_estimated_height_m',
+                'calibration_dependent_svm_absolute_error_m',
+                'calibration_dependent_svm_absolute_error_cm',
+                'calibration_dependent_svm_relative_error_percent',
+                'calibration_dependent_svm_within_1_percent',
+                'calibration_dependent_svm_valid',
+                'calibration_dependent_svm_warning',
+                'calibration_dependent_svm_focal_error_percent',
+                'calibration_dependent_svm_pitch_bias_deg',
+                'calibration_dependent_svm_height_error_percent',
+                'ground_truth_height_m'
+            ];
+        }
+
+        function fullFactorialCSVRow(s) {
+            return [
+                s.sample_id,
+                s.sweep_parameters.position_z_m,
+                s.sweep_parameters.pitch_deg,
+                s.sweep_parameters.yaw_deg,
+                s.sweep_parameters.fov_deg,
+                s.sweep_parameters.pole_h_m,
+                s.pole_world_position_m.x,
+                s.pole_world_position_m.z,
+                s.pole_world_position_m.distance_from_camera_ground_projection_m,
+                s.visibility.top_inside_frame,
+                s.visibility.bottom_inside_frame,
+                s.visibility.both_inside_frame,
+                s.image_width_px,
+                s.image_height_px,
+                s.inputs.H_cam_m,
+                s.keypoints_for_visualization.x_top_px,
+                s.inputs.y_top_px,
+                s.keypoints_for_visualization.x_bot_px,
+                s.inputs.y_bot_px,
+                s.inputs.y_hor_px,
+                s.inputs.y_v_px,
+                s.raw_projected_coordinates_px.x_top_px,
+                s.raw_projected_coordinates_px.y_top_px,
+                s.raw_projected_coordinates_px.x_bot_px,
+                s.raw_projected_coordinates_px.y_bot_px,
+                s.raw_projected_coordinates_px.y_hor_px,
+                s.raw_projected_coordinates_px.y_v_px,
+                s.estimated_height_m,
+                s.absolute_error_m,
+                s.absolute_error_cm,
+                s.relative_error_percent,
+                s.within_1_percent,
+                s.valid,
+                s.warning,
+                s.traditional_svm_baseline.estimated_height_m,
+                s.traditional_svm_baseline.absolute_error_m,
+                s.traditional_svm_baseline.absolute_error_cm,
+                s.traditional_svm_baseline.relative_error_percent,
+                s.traditional_svm_baseline.within_1_percent,
+                s.traditional_svm_baseline.valid,
+                s.traditional_svm_baseline.warning,
+                params.baselineFocalErrorPercent,
+                params.baselinePitchBiasDeg,
+                params.baselineHeightErrorPercent,
+                s.ground_truth_height_m
+            ];
+        }
+
+        function toCSVText(header, rows) {
+            return [header, ...rows].map(row => row.map(value => {
+                const text = String(value ?? '');
+                return `"${text.replace(/"/g, '""')}"`;
+            }).join(',')).join('\n');
+        }
+
+        function generateFullFactorialMetrics() {
+            // Compute the full Cartesian-product sweep and keep only the summary in memory.
+            // This gives an on-screen comparison without forcing a CSV/JSON download.
+            const result = generateFullFactorialSamples({ summaryOnly: true });
+            if (!result) return;
+            alert(`Full-factorial metrics generated. Rows: ${formatInteger(result.summary.total_rows_generated)}; visible rows: ${formatInteger(result.summary.visible_rows_count)}.`);
+        }
+
+        function exportFullFactorialCSV() {
+            const result = generateFullFactorialSamples();
+            if (!result) return;
+
+            const header = fullFactorialCSVHeader();
+            const rows = result.samples.map(fullFactorialCSVRow);
+            const csv = toCSVText(header, rows);
+            const timestamp = makeTimestamp();
+            downloadTextFile(csv, `svm_full_factorial_${timestamp}.csv`, 'text/csv;charset=utf-8');
+            downloadTextFile(JSON.stringify(result.summary, null, 2), `svm_full_factorial_summary_${timestamp}.json`, 'application/json;charset=utf-8');
+        }
+
+        function exportFullFactorialJSON() {
+            const ranges = getFullFactorialRanges();
+            const total = estimateFullFactorialCountFromRanges(ranges);
+            if (total > 150000) {
+                const proceed = confirm(`Full JSON export will include ${formatInteger(total)} detailed sample objects and may be very large. CSV is recommended for large sweeps. Continue JSON export?`);
+                if (!proceed) return;
+            }
+
+            const result = generateFullFactorialSamples();
+            if (!result) return;
+
+            const payload = {
+                ...result.summary,
+                samples: result.samples
+            };
+            downloadTextFile(JSON.stringify(payload, null, 2), `svm_full_factorial_${makeTimestamp()}.json`, 'application/json;charset=utf-8');
+        }
+
+
+        function setupGUI() {
+            gui = new GUI({ title: "Controls", width: 350 });
+
+            const folderCam = gui.addFolder('Camera Settings');
+            guiControllers.camX = folderCam.add(params, 'camX', -50, 50).name('Position X (m)').onChange(updateCameraPose);
+            guiControllers.camZ = folderCam.add(params, 'camZ', -50, 50).name('Position Y (m)').onChange(updateCameraPose);
+            guiControllers.camHeight = folderCam.add(params, 'camHeight', 0.1, 20).name('Position Z (m)').onChange(updateCameraPose);
+            guiControllers.camPitch = folderCam.add(params, 'camPitch', -90, 90).name('Pitch (°)').onChange(updateCameraPose);
+            guiControllers.camYaw = folderCam.add(params, 'camYaw', -180, 180).name('Yaw (°)').onChange(updateCameraPose);
+
+            guiControllers.fov = folderCam.add(params, 'fov', 10, 120).name('FOV (°)').onChange(v => {
+                camera.fov = v;
+                camera.updateProjectionMatrix();
+            });
+
+            const folderPole = gui.addFolder('Marker');
+            guiControllers.poleHeight = folderPole.add(params, 'poleHeight', 0.5, 5.0).name('Pole H (m)').onChange(updatePoleGeometry);
+            folderPole.add(params, 'segmentSize', 0.1, 1.0).step(0.1).name('Ruler Grad (m)').onChange(v => {
+                ghostPole.material.uniforms.uSegmentSize.value = v;
+                poles.forEach(p => p.material.uniforms.uSegmentSize.value = v);
+            });
+
+            const folderOverlay = gui.addFolder('SVM Overlay');
+            folderOverlay.add(params, 'showSVMOverlay').name('Show SVM Overlay');
+            folderOverlay.add(params, 'showHorizonLine').name('Draw Horizon Line');
+            folderOverlay.add(params, 'showVerticalVP').name('Draw Vertical VP');
+            folderOverlay.add(params, 'showKeypoints').name('Draw Top/Bottom');
+            folderOverlay.add(params, 'showErrorEvaluation').name('Show Error Text');
+            folderOverlay.add(params, 'usePixelQuantization').name('Use Rounded Pixel Inputs');
+
+            const folderBaseline = gui.addFolder('SVM Method Comparison');
+            folderBaseline.add(params, 'compareTraditionalSVM').name('Show Calibration-dependent SVM Comparison');
+            folderBaseline.add(params, 'baselineFocalErrorPercent', -10, 10).step(0.1).name('Calibration-dependent SVM Focal Error (%)');
+            folderBaseline.add(params, 'baselinePitchBiasDeg', -5, 5).step(0.1).name('Calibration-dependent SVM Pitch Bias (°)');
+            folderBaseline.add(params, 'baselineHeightErrorPercent', -10, 10).step(0.1).name('Calibration-dependent SVM Height Error (%)');
+
+            const folderValidation = gui.addFolder('Simulation Evaluation');
+            folderValidation.add(params, 'batchSize', 1, 200, 1).name('Random Batch Size');
+            folderValidation.add(params, 'randomHeightMin', 0.3, 5.0).name('Min GT Height (m)');
+            folderValidation.add(params, 'randomHeightMax', 0.3, 5.0).name('Max GT Height (m)');
+            folderValidation.add(params, 'generateBatch').name('Generate Random Batch');
+            folderValidation.add(params, 'clearPoles').name('Clear Poles');
+
+            const folderFull = gui.addFolder('Full-Factorial Batch');
+            folderFull.add(params, 'fullCamHeightMin', 0.1, 10).step(0.01).name('Position Z Min (m)');
+            folderFull.add(params, 'fullCamHeightMax', 0.1, 10).step(0.01).name('Position Z Max (m)');
+            folderFull.add(params, 'fullCamHeightStep', 0.01, 5).step(0.01).name('Position Z Step (m)');
+
+            folderFull.add(params, 'fullPitchMin', -90, 180).step(1).name('Pitch Min (°)');
+            folderFull.add(params, 'fullPitchMax', -90, 180).step(1).name('Pitch Max (°)');
+            folderFull.add(params, 'fullPitchStep', 0.1, 90).step(0.1).name('Pitch Step (°)');
+
+            folderFull.add(params, 'fullYawMin', -180, 180).step(1).name('Yaw Min (°)');
+            folderFull.add(params, 'fullYawMax', -180, 180).step(1).name('Yaw Max (°)');
+            folderFull.add(params, 'fullYawStep', 0.1, 180).step(0.1).name('Yaw Step (°)');
+
+            folderFull.add(params, 'fullFovMin', 5, 120).step(1).name('FOV Min (°)');
+            folderFull.add(params, 'fullFovMax', 5, 120).step(1).name('FOV Max (°)');
+            folderFull.add(params, 'fullFovStep', 0.1, 60).step(0.1).name('FOV Step (°)');
+
+            folderFull.add(params, 'fullPoleHeightMin', 0.3, 5.0).step(0.01).name('Pole H Min (m)');
+            folderFull.add(params, 'fullPoleHeightMax', 0.3, 5.0).step(0.01).name('Pole H Max (m)');
+            folderFull.add(params, 'fullPoleHeightStep', 0.01, 2.0).step(0.01).name('Pole H Step (m)');
+
+            folderFull.add(params, 'fullPoleDistanceMin', 0.5, 100).step(0.5).name('Auto Dist Min (m)');
+            folderFull.add(params, 'fullPoleDistanceMax', 1, 150).step(0.5).name('Auto Dist Max (m)');
+            folderFull.add(params, 'fullPoleDistanceStep', 0.1, 5).step(0.1).name('Auto Dist Step (m)');
+            folderFull.add(params, 'fullVisibilityMarginPx', 0, 100).step(1).name('Visibility Margin (px)');
+            folderFull.add(params, 'fullFactorialMaxRows', 1000, 1000000).step(1000).name('Safety Row Limit');
+
+            folderFull.add(params, 'generateFullFactorialMetrics').name('Generate Full Grid Metrics');
+            folderFull.add(params, 'previewFullFactorialCount').name('Preview Combination Count');
+            folderFull.add(params, 'exportFullFactorialCSV').name('Export Full Grid CSV');
+            folderFull.add(params, 'exportFullFactorialJSON').name('Export Full Grid JSON');
+
+            const folderSave = gui.addFolder('Export Current View');
+            folderSave.add(params, 'saveImage').name('Export Annotated PNG');
+            folderSave.add(params, 'exportJSON').name('Export SVM JSON');
+            folderSave.add(params, 'exportCSV').name('Export SVM CSV');
+
+            folderCam.open();
+            folderPole.open();
+            folderOverlay.open();
+            folderBaseline.open();
+            folderValidation.open();
+            folderFull.open();
+            folderSave.open();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            resizeOverlayCanvas();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            updateMovement(delta);
+            renderer.render(scene, camera);
+            if (overlayCtx) {
+                overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                if (params.showSVMOverlay) {
+                    drawMeasurementOverlay(overlayCtx, overlayCanvas.width, overlayCanvas.height, false);
+                }
+            }
+            updateSVMOutputPanel();
+        }
+    </script>
+</body>
+</html>
